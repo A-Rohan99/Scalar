@@ -18,18 +18,24 @@ if _root not in sys.path:
 load_dotenv()
 
 # ── Required environment variables (as per submission spec) ──────────────────
-API_BASE_URL  = os.getenv("API_BASE_URL", "http://localhost:7860")
-MODEL_NAME    = os.getenv("MODEL_NAME",   "gpt-4o-mini")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")            # no default — required at runtime
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")        # optional: only when using from_docker_image()
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_KEY = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+
+# ── Local Environment Backend Mapping ──────────────────────────────────────────
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 # ── OpenAI-compatible client configured via the above variables ──────────────
 from openai import OpenAI
 
 client = None
 try:
-    if OPENAI_API_KEY:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+    if API_BASE_URL and API_KEY:
+        # Crucial for Phase 2 constraint: must route exactly through their base proxy
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    elif API_KEY:
+        client = OpenAI(api_key=API_KEY)
     else:
         client = OpenAI()
 except Exception:
@@ -135,7 +141,7 @@ def run_task(task_id: int) -> float:
     success = False
 
     try:
-        resp = httpx.post(f"{API_BASE_URL}/reset", json={"task_id": task_id, "seed": seed}, timeout=30.0)
+        resp = httpx.post(f"{ENV_BASE_URL}/reset", json={"task_id": task_id, "seed": seed}, timeout=30.0)
         resp.raise_for_status()
         resp_data = resp.json()
         obs = resp_data.get("observation", resp_data)
@@ -166,7 +172,7 @@ def run_task(task_id: int) -> float:
         try:
             headers = {"X-Session-ID": session_id} if session_id else {}
             step_resp = httpx.post(
-                f"{API_BASE_URL}/step", json=action, headers=headers, timeout=30.0
+                f"{ENV_BASE_URL}/step", json=action, headers=headers, timeout=30.0
             )
             step_resp.raise_for_status()
             step_data = step_resp.json()
@@ -196,7 +202,7 @@ def run_task(task_id: int) -> float:
 
     try:
         if session_id:
-            grader_resp = httpx.get(f"{API_BASE_URL}/grader", headers={"X-Session-ID": session_id}, timeout=10.0)
+            grader_resp = httpx.get(f"{ENV_BASE_URL}/grader", headers={"X-Session-ID": session_id}, timeout=10.0)
             if grader_resp.status_code == 200:
                 score = float(grader_resp.json().get("score", score))
     except Exception:
