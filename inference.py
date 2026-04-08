@@ -36,7 +36,7 @@ client = OpenAI()
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 try:
-    from baseline.prompts import SYSTEM_PROMPT
+    from prompts import SYSTEM_PROMPT
 except ImportError:
     SYSTEM_PROMPT = (
         "You are a DataOps incident-response agent. "

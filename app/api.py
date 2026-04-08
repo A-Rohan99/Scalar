@@ -496,7 +496,7 @@ async def _run_baseline_job(job_id: str):
     
     try:
         process = await asyncio.create_subprocess_exec(
-            "python", "baseline/inference.py",
+            "python", "inference.py",
             env=env_vars,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
