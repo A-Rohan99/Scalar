@@ -3,6 +3,7 @@ import re
 import json
 import sys
 import httpx
+from typing import List, Optional
 from dotenv import load_dotenv
 
 try:
@@ -25,15 +26,16 @@ LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")        # optional: only when us
 # ── OpenAI-compatible client configured via the above variables ──────────────
 from openai import OpenAI
 
-# We initialize lazily or let the client automatically pick up OPENAI_API_KEY
-# Try mapping it gracefully so it doesn't crash on import if the evaluator omits it.
+client = None
 try:
-    client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+    if OPENAI_API_KEY:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    else:
+        client = OpenAI()
 except Exception:
-    client = None
+    pass
 
-
-# ── System prompt ─────────────────────────────────────────────────────────────
+# ── System prompt ──
 try:
     from prompts import SYSTEM_PROMPT
 except ImportError:
@@ -46,25 +48,33 @@ except ImportError:
     )
 
 BASELINE_SEEDS = {1: 42, 2: 99, 3: 777}
+BENCHMARK_NAME = "opendataopsenv"
+SUCCESS_SCORE_THRESHOLD = 0.5
 
+# ── Structured stdout logging ─────────────────────────────────────────────────
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
-# ── Structured stdout logging (START / STEP / END) ────────────────────────────
-def log_start(task_id: int, seed: int):
-    print(f"START task_id={task_id} seed={seed} model={MODEL_NAME} api_base={API_BASE_URL}")
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    error_val = str(error_val).replace('\n', ' ').replace('\r', ' ')
+    done_val = str(bool(done)).lower()
+    action_clean = str(action).replace('\n', ' ').replace('\r', ' ')
+    print(
+        f"[STEP] step={step} action={action_clean} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
 
-def log_step(task_id: int, step: int, action_type: str, reward: float, score: float):
-    print(f"STEP  task_id={task_id} step={step} action={action_type} reward={reward:.4f} score={score:.4f}")
-
-def log_end(task_id: int, steps: int, final_score: float):
-    print(f"END   task_id={task_id} steps={steps} score={final_score:.4f}")
-    print(f"SCORE task_{task_id}: {final_score:.4f}")
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(bool(success)).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 # ── LLM call ─────────────────────────────────────────────────────────────────
 def call_llm(messages: list) -> str:
     try:
         if client is None:
-            raise ValueError("OpenAI client not configured")
+            return '{"action_type": "submit"}'
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
@@ -72,45 +82,33 @@ def call_llm(messages: list) -> str:
         )
         return response.choices[0].message.content
     except Exception as e:
-        print(f"STEP  llm_error={e}")
         return '{"action_type": "submit"}'
-
 
 # ── Action parsing ────────────────────────────────────────────────────────────
 def parse_action(raw_text: str) -> dict:
-    """Extract and parse action JSON from LLM output."""
+    if raw_text is None:
+        return None
     text = raw_text.strip()
-
     fence_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
     if fence_match:
         text = fence_match.group(1).strip()
-
     brace_match = re.search(r'\{[\s\S]*\}', text)
     if brace_match:
         text = brace_match.group(0)
-
     text = re.sub(r',\s*([}\]])', r'\1', text)
-
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         try:
-            text_fixed = re.sub(r"'([^']*)'", r'"\1"', text)
-            return json.loads(text_fixed)
+            return json.loads(re.sub(r"'([^']*)'", r'"\1"', text))
         except json.JSONDecodeError:
             return None
 
-
 def safe_action(parsed: dict | None, step_num: int) -> dict:
-    """Convert parsed dict to a valid environment action."""
     if parsed is None:
         return {"action_type": "submit"}
-
     action_type = parsed.get("action_type", "").lower()
-
-    if action_type == "query" and "sql" in parsed:
-        return parsed
-    elif action_type == "ddl" and "sql" in parsed:
+    if action_type in ["query", "ddl"] and "sql" in parsed:
         return parsed
     elif action_type == "test" and "target_table" in parsed:
         return parsed
@@ -125,102 +123,96 @@ def safe_action(parsed: dict | None, step_num: int) -> dict:
             return {"action_type": "query", "sql": "SELECT name, sql FROM sqlite_master WHERE type IN ('table','view')"}
         return {"action_type": "submit"}
 
-
 # ── Task runner ───────────────────────────────────────────────────────────────
 def run_task(task_id: int) -> float:
-    seed = BASELINE_SEEDS.get(task_id)
-    log_start(task_id, seed)
+    seed = BASELINE_SEEDS.get(task_id, 42)
+    task_name = f"task_{task_id}"
+    log_start(task=task_name, env=BENCHMARK_NAME, model=MODEL_NAME)
+
+    rewards_list = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
     try:
-        resp = httpx.post(
-            f"{API_BASE_URL}/reset",
-            json={"task_id": task_id, "seed": seed},
-            timeout=30.0,
-        )
+        resp = httpx.post(f"{API_BASE_URL}/reset", json={"task_id": task_id, "seed": seed}, timeout=30.0)
         resp.raise_for_status()
         resp_data = resp.json()
         obs = resp_data.get("observation", resp_data)
         session_id = resp_data.get("session_id", "")
     except Exception as e:
-        print(f"END   task_id={task_id} steps=0 score=0.0000 error={e}")
+        log_end(success=False, steps=0, score=0.0, rewards=[])
         return 0.0
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     max_steps = obs.get("max_steps", 25)
-    consecutive_parse_failures = 0
-    step = 0
-
-    for step in range(max_steps):
+    consecutive_failures = 0
+    
+    for step in range(1, max_steps + 1):
         messages.append({"role": "user", "content": json.dumps(obs)})
 
-        try:
-            llm_response = call_llm(messages)
-            parsed = parse_action(llm_response)
-
-            if parsed is None:
-                consecutive_parse_failures += 1
-                action = {"action_type": "submit"} if consecutive_parse_failures >= 3 else safe_action(parsed, step)
-            else:
-                consecutive_parse_failures = 0
-                action = safe_action(parsed, step)
-        except Exception as e:
-            print(f"STEP  task_id={task_id} step={step} llm_error={e}")
-            action = {"action_type": "submit"}
+        llm_response = call_llm(messages)
+        parsed = parse_action(llm_response)
+        
+        if parsed is None:
+            consecutive_failures += 1
+            action = {"action_type": "submit"} if consecutive_failures >= 3 else safe_action(parsed, step)
+        else:
+            consecutive_failures = 0
+            action = safe_action(parsed, step)
 
         messages.append({"role": "assistant", "content": json.dumps(action)})
 
         try:
             headers = {"X-Session-ID": session_id} if session_id else {}
             step_resp = httpx.post(
-                f"{API_BASE_URL}/step",
-                json=action,
-                headers=headers,
-                timeout=30.0,
+                f"{API_BASE_URL}/step", json=action, headers=headers, timeout=30.0
             )
             step_resp.raise_for_status()
             step_data = step_resp.json()
 
             obs = step_data.get("observation", step_data)
-            reward = step_data.get("reward", 0.0)
-            score  = step_data.get("info", {}).get("grader_score", 0.0)
+            reward = float(step_data.get("reward", 0.0))
+            done = bool(step_data.get("done", False) or step_data.get("truncated", False))
+            
+            error_val = None
+            if "last_error_message" in obs and obs["last_error_message"]:
+                error_val = obs["last_error_message"]
+            
+            score = float(step_data.get("info", {}).get("grader_score", 0.0))
+            
+            rewards_list.append(reward)
+            steps_taken = step
+            
+            log_step(step=step, action=json.dumps(action), reward=reward, done=done, error=error_val)
 
-            log_step(task_id, step + 1, action.get("action_type", "?"), reward, score)
-
-            if step_data.get("done") or step_data.get("truncated"):
+            if done:
                 break
         except Exception as e:
-            print(f"STEP  task_id={task_id} step={step} env_error={e}")
+            log_step(step=step, action=json.dumps(action), reward=0.0, done=True, error=str(e))
+            rewards_list.append(0.0)
+            steps_taken = step
             break
 
-    # ── Final grader score ────────────────────────────────────────────────────
     try:
-        headers = {"X-Session-ID": session_id} if session_id else {}
-        grader_resp = httpx.get(f"{API_BASE_URL}/grader", headers=headers, timeout=10.0)
-        grader_resp.raise_for_status()
-        final_score = grader_resp.json().get("score", 0.0)
-    except Exception as e:
-        print(f"STEP  task_id={task_id} grader_error={e}")
-        final_score = 0.0
+        if session_id:
+            grader_resp = httpx.get(f"{API_BASE_URL}/grader", headers={"X-Session-ID": session_id}, timeout=10.0)
+            if grader_resp.status_code == 200:
+                score = float(grader_resp.json().get("score", score))
+    except Exception:
+        pass
 
-    log_end(task_id, step + 1, final_score)
-    return final_score
-
+    success = score >= SUCCESS_SCORE_THRESHOLD
+    log_end(success=success, steps=steps_taken, score=score, rewards=rewards_list)
+    return score
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def run_baseline():
-    scores = {}
     for task_id in [1, 2, 3]:
-        score = run_task(task_id)
-        scores[f"task_{task_id}"] = score
-
-    print("\n--- Summary ---")
-    for task, score in scores.items():
-        print(f"{task}: {score:.4f}")
-
+        run_task(task_id)
 
 if __name__ == "__main__":
     try:
         run_baseline()
-    except Exception as e:
-        print(f"END   error={e}")
+    except Exception:
         pass
