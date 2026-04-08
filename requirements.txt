@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.0
+faker==24.0.0
+openai==1.25.0
+pandas==2.2.2
+python-dotenv==1.0.1
+pytest==8.2.0
+httpx==0.27.0
+# google-generativeai  # optional: only needed if using Vertex AI SDK directly
+# The OpenAI SDK with base_url redirect works without this package

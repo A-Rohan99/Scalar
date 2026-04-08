@@ -1,0 +1,48 @@
+name: OpenDataOpsEnv
+version: "1.1.0"
+description: >
+  DataOps incident-response environment. Agents query SQLite databases,
+  remove NULL data, mask PII, and repair broken SQL pipelines.
+  All schemas and data are dynamically generated per episode via seeded Faker — zero hardcoding.
+domain: "Data Engineering / DataOps"
+tags: ["openenv", "dataops", "sql", "pii", "data-quality", "pipeline-repair"]
+action_space:
+  type: "JSON Union"
+  schema_endpoint: "/tasks"
+  action_types: ["query", "ddl", "test", "submit"]
+observation_space:
+  type: "JSON"
+  max_steps_per_episode: 20
+tasks:
+  - id: 1
+    name: "Data Cleaning"
+    difficulty: "easy"
+  - id: 2
+    name: "PII Masking"
+    difficulty: "medium"
+  - id: 3
+    name: "Pipeline Repair"
+    difficulty: "hard"
+endpoints:
+  reset: "POST /reset"
+  step: "POST /step"
+  state: "GET /state"
+  grader: "GET /grader"
+  tasks: "GET /tasks"
+  baseline: "POST /baseline"
+baseline_scores:
+  task_1:
+    seed: 42
+    model: llama-3.3-70b-versatile
+    score: 1.0000
+    date: 2026-04-06
+  task_2:
+    seed: 99
+    model: llama-3.3-70b-versatile
+    score: 0.6136
+    date: 2026-04-06
+  task_3:
+    seed: 777
+    model: llama-3.3-70b-versatile
+    score: 0.9250
+    date: 2026-04-06
