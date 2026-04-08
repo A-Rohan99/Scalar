@@ -2,6 +2,10 @@ import sqlite3
 import re
 from typing import Any
 
+def _clamp_score(score: float) -> float:
+    """Validator constraint: score must be STRICTLY between (0.01, 0.99)"""
+    return float(max(0.001, min(0.999, score)))
+
 def grade_task1(db: sqlite3.Connection, state: Any) -> float:
     main_table = state.table_registry["main"]
     id_col = state.column_registry["id"]
@@ -18,7 +22,7 @@ def grade_task1(db: sqlite3.Connection, state: Any) -> float:
         cursor.execute(f"SELECT COUNT(*) FROM {main_table} WHERE {id_col} IS NOT NULL")
         current_valid = cursor.fetchone()[0]
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return 0.0
+        return _clamp_score(0.0)
         
     if initial_nulls == 0:
         null_score = 1.0
@@ -31,7 +35,7 @@ def grade_task1(db: sqlite3.Connection, state: Any) -> float:
         destruction_penalty = max(0.0, (initial_valid - current_valid) / initial_valid)
         
     final_score = null_score - destruction_penalty
-    return float(max(0.0, min(1.0, final_score)))
+    return _clamp_score(final_score)
 
 def _is_valid_masked_email(email: str) -> bool:
     """Email must keep first char, use asterisks for local part, preserve @domain, and match original structure."""
@@ -51,10 +55,10 @@ def grade_task2(db: sqlite3.Connection, state: Any) -> float:
             cursor.execute(f"SELECT {email_col}, {phone_col} FROM {main_table}")
         rows = cursor.fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return 0.0
+        return _clamp_score(0.0)
 
     if not rows:
-        return 0.0
+        return _clamp_score(0.0)
 
     email_scores, phone_scores, ssn_scores = [], [], []
 
@@ -75,9 +79,9 @@ def grade_task2(db: sqlite3.Connection, state: Any) -> float:
 
     if ssn_scores:
         ssn_mean = sum(ssn_scores) / len(ssn_scores)
-        return round((email_mean + phone_mean + ssn_mean) / 3.0, 4)
+        return _clamp_score((email_mean + phone_mean + ssn_mean) / 3.0)
     else:
-        return round((email_mean + phone_mean) / 2.0, 4)
+        return _clamp_score((email_mean + phone_mean) / 2.0)
 
 def grade_task3(db: sqlite3.Connection, state: Any) -> float:
     try:
@@ -90,7 +94,7 @@ def grade_task3(db: sqlite3.Connection, state: Any) -> float:
         expected_data = state.initial_snapshot["expected_view_data"]  # list of dicts, keyed by real DB col names
 
         if not rows:
-            return 0.0
+            return _clamp_score(0.0)
 
         # Build logical→real key mapping from the first fixture row
         # expected_view_columns = ["id","product_name","revenue","category"]
@@ -107,7 +111,7 @@ def grade_task3(db: sqlite3.Connection, state: Any) -> float:
         col_score = len(common_logical) / len(expected_cols_logical) if expected_cols_logical else 0.0
 
         if col_score == 0.0:
-            return 0.0
+            return _clamp_score(0.0)
 
         # Build result dicts keyed by lowercased col name
         result_dicts = [dict(zip(col_names, row)) for row in rows]
@@ -135,7 +139,7 @@ def grade_task3(db: sqlite3.Connection, state: Any) -> float:
                         matches += 1
             value_score = matches / total if total > 0 else 0.0
 
-        return round(0.3 * col_score + 0.7 * value_score, 4)
+        return _clamp_score(0.3 * col_score + 0.7 * value_score)
 
     except Exception:
-        return 0.0
+        return _clamp_score(0.0)

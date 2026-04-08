@@ -137,7 +137,7 @@ def run_task(task_id: int) -> float:
 
     rewards_list = []
     steps_taken = 0
-    score = 0.0
+    score = 0.001
     success = False
 
     try:
@@ -147,8 +147,8 @@ def run_task(task_id: int) -> float:
         obs = resp_data.get("observation", resp_data)
         session_id = resp_data.get("session_id", "")
     except Exception as e:
-        log_end(success=False, steps=0, score=0.0, rewards=[])
-        return 0.0
+        log_end(success=False, steps=0, score=0.001, rewards=[])
+        return 0.001
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     max_steps = obs.get("max_steps", 25)
@@ -185,7 +185,7 @@ def run_task(task_id: int) -> float:
             if "last_error_message" in obs and obs["last_error_message"]:
                 error_val = obs["last_error_message"]
             
-            score = float(step_data.get("info", {}).get("grader_score", 0.0))
+            score = float(step_data.get("info", {}).get("grader_score", 0.001))
             
             rewards_list.append(reward)
             steps_taken = step
@@ -195,8 +195,8 @@ def run_task(task_id: int) -> float:
             if done:
                 break
         except Exception as e:
-            log_step(step=step, action=json.dumps(action), reward=0.0, done=True, error=str(e))
-            rewards_list.append(0.0)
+            log_step(step=step, action=json.dumps(action), reward=0.001, done=True, error=str(e))
+            rewards_list.append(0.001)
             steps_taken = step
             break
 
